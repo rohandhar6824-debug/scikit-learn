@@ -1,4 +1,6 @@
 from cython cimport floating
+from libc.stdint cimport intp_t
+from libc.math cimport log2
 
 cdef inline void dual_swap(
     floating* darr,
@@ -22,35 +24,38 @@ cdef int simultaneous_sort(
     intp_t size,
 ) noexcept nogil:
     """
-    Perform a recursive quicksort on the values array as to sort them ascendingly.
+    Perform an iterative quicksort on the values array as to sort them ascendingly.
     This simultaneously performs the swaps on both the values and the indices arrays.
-
+    
+    Fixes #33167: replaces recursive quicksort with iterative version to prevent
+    stack overflow with datasets containing many duplicate values (1.6M+ points).
+    
     The numpy equivalent is:
-
         def simultaneous_sort(dist, idx):
              i = np.argsort(dist)
              return dist[i], idx[i]
-
+             
     Notes
     -----
-    Arrays are manipulated via a pointer to there first element and their size
+    Arrays are manipulated via a pointer to their first element and their size
     as to ease the processing of dynamically allocated buffers.
     """
-    # TODO: In order to support discrete distance metrics, we need to have a
-    # simultaneous sort which breaks ties on indices when distances are identical.
-    # The best might be using a std::stable_sort and a Comparator which might need
-    # an Array of Structures (AoS) instead of the Structure of Arrays (SoA)
-    # currently used.
     cdef:
-        intp_t pivot_idx, i, store_idx
+        intp_t i, j, low, high, pivot_idx, store_idx
         floating pivot_val
-
-    # in the small-array case, do things efficiently
+        intp_t pivot_idx_val  # FIXED: save index for insertion sort
+        
+        # Fixed-size stack for iterative quicksort (256 entries = 128 pairs)
+        intp_t stack[256]
+        intp_t top = 0
+    
+    # Handle small arrays efficiently (unchanged from original)
     if size <= 1:
-        pass
+        return 0
     elif size == 2:
         if values[0] > values[1]:
             dual_swap(values, indices, 0, 1)
+        return 0
     elif size == 3:
         if values[0] > values[1]:
             dual_swap(values, indices, 0, 1)
@@ -58,36 +63,86 @@ cdef int simultaneous_sort(
             dual_swap(values, indices, 1, 2)
             if values[0] > values[1]:
                 dual_swap(values, indices, 0, 1)
-    else:
-        # Determine the pivot using the median-of-three rule.
-        # The smallest of the three is moved to the beginning of the array,
-        # the middle (the pivot value) is moved to the end, and the largest
-        # is moved to the pivot index.
-        pivot_idx = size // 2
-        if values[0] > values[size - 1]:
-            dual_swap(values, indices, 0, size - 1)
-        if values[size - 1] > values[pivot_idx]:
-            dual_swap(values, indices, size - 1, pivot_idx)
-            if values[0] > values[size - 1]:
-                dual_swap(values, indices, 0, size - 1)
-        pivot_val = values[size - 1]
-
-        # Partition indices about pivot.  At the end of this operation,
-        # pivot_idx will contain the pivot value, everything to the left
-        # will be smaller, and everything to the right will be larger.
-        store_idx = 0
-        for i in range(size - 1):
+        return 0
+    
+    # Push initial range [0, size-1]
+    stack[top] = 0
+    top += 1
+    stack[top] = size - 1
+    top += 1
+    
+    while top > 0:
+        # Pop range from stack
+        top -= 1
+        high = stack[top]
+        top -= 1
+        low = stack[top]
+        
+        # FIXED insertion sort for small ranges (< 16 elements)
+        if high - low < 16:
+            for i in range(low + 1, high + 1):
+                pivot_val = values[i]
+                pivot_idx_val = indices[i]      # FIXED: Save index BEFORE loop
+                j = i - 1
+                while j >= low and values[j] > pivot_val:
+                    values[j + 1] = values[j]
+                    indices[j + 1] = indices[j]
+                    j -= 1
+                values[j + 1] = pivot_val
+                indices[j + 1] = pivot_idx_val  # FIXED: Use saved index
+            continue
+        
+        # Median-of-three pivot selection (unchanged from original)
+        pivot_idx = low + (high - low) // 2
+        if values[low] > values[high]:
+            dual_swap(values, indices, low, high)
+        if values[high] > values[pivot_idx]:
+            dual_swap(values, indices, high, pivot_idx)
+            if values[low] > values[high]:
+                dual_swap(values, indices, low, high)
+        
+        pivot_val = values[high]
+        
+        # Partition (unchanged from original)
+        store_idx = low
+        for i in range(low, high):
             if values[i] < pivot_val:
-                dual_swap(values, indices, i, store_idx)
+                if i != store_idx:
+                    dual_swap(values, indices, i, store_idx)
                 store_idx += 1
-        dual_swap(values, indices, store_idx, size - 1)
+        
+        if store_idx != high:
+            dual_swap(values, indices, store_idx, high)
+        
         pivot_idx = store_idx
-
-        # Recursively sort each side of the pivot
-        if pivot_idx > 1:
-            simultaneous_sort(values, indices, pivot_idx)
-        if pivot_idx + 2 < size:
-            simultaneous_sort(values + pivot_idx + 1,
-                              indices + pivot_idx + 1,
-                              size - pivot_idx - 1)
+        
+        # Push partitions to stack (larger first = optimal stack usage)
+        cdef intp_t left_size = pivot_idx - low
+        cdef intp_t right_size = high - pivot_idx
+        
+        if left_size > right_size:
+            # Left is larger: push left first, then right
+            if left_size > 3:
+                stack[top] = low
+                top += 1
+                stack[top] = pivot_idx - 1
+                top += 1
+            if right_size > 3:
+                stack[top] = pivot_idx + 1
+                top += 1
+                stack[top] = high
+                top += 1
+        else:
+            # Right is larger/equal: push right first, then left
+            if right_size > 3:
+                stack[top] = pivot_idx + 1
+                top += 1
+                stack[top] = high
+                top += 1
+            if left_size > 3:
+                stack[top] = low
+                top += 1
+                stack[top] = pivot_idx - 1
+                top += 1
+    
     return 0
