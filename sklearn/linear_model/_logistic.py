@@ -726,14 +726,14 @@ def _log_reg_scoring_path(
             score_params = score_params or {}
             score_params = _check_method_params(X=X, params=score_params, indices=test)
             
-            # FIXED: Pass labels=classes to the scorer for scoring methods that need
-            # to know about all classes, even if they're not present in y_test.
-            # This is particularly important for brier_score_loss which requires
-            # the full set of classes to compute probabilities correctly.
-            if scoring in ["neg_brier_score", "brier_score_loss"]:
-                # Ensure we pass labels parameter for brier score
+            # FIXED: Check if the scorer supports a 'labels' parameter and pass
+            # classes as labels when test fold doesn't contain all classes.
+            # This is important for probabilistic scorers like neg_brier_score
+            # and neg_log_loss that need full class information.
+            if hasattr(scorer, '_kwargs') and 'labels' in scorer._kwargs:
+                # Create a shallow copy to avoid mutating user-provided params
                 score_params = score_params.copy()
-                score_params["labels"] = classes
+                score_params['labels'] = classes
             
             scores.append(scorer(log_reg, X_test, y_test, **score_params))
     return coefs, Cs, np.array(scores), n_iter
