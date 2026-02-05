@@ -1,4 +1,5 @@
 from cython cimport floating
+from libc.stdint cimport intp_t
 
 cdef inline void dual_swap(
     floating* darr,
@@ -22,7 +23,7 @@ cdef int simultaneous_sort(
     intp_t size,
 ) noexcept nogil:
     """
-    Perform a recursive quicksort on the values array as to sort them ascendingly.
+    Perform an iterative quicksort on the values array as to sort them ascendingly.
     This simultaneously performs the swaps on both the values and the indices arrays.
 
     The numpy equivalent is:
@@ -42,15 +43,18 @@ cdef int simultaneous_sort(
     # an Array of Structures (AoS) instead of the Structure of Arrays (SoA)
     # currently used.
     cdef:
-        intp_t pivot_idx, i, store_idx
+        intp_t i, j, low, high, pivot_idx, store_idx
         floating pivot_val
+        intp_t pivot_idx_val
+        intp_t stack[256]
+        intp_t top = 0
 
-    # in the small-array case, do things efficiently
     if size <= 1:
-        pass
+        return 0
     elif size == 2:
         if values[0] > values[1]:
             dual_swap(values, indices, 0, 1)
+        return 0
     elif size == 3:
         if values[0] > values[1]:
             dual_swap(values, indices, 0, 1)
@@ -58,36 +62,78 @@ cdef int simultaneous_sort(
             dual_swap(values, indices, 1, 2)
             if values[0] > values[1]:
                 dual_swap(values, indices, 0, 1)
-    else:
-        # Determine the pivot using the median-of-three rule.
-        # The smallest of the three is moved to the beginning of the array,
-        # the middle (the pivot value) is moved to the end, and the largest
-        # is moved to the pivot index.
-        pivot_idx = size // 2
-        if values[0] > values[size - 1]:
-            dual_swap(values, indices, 0, size - 1)
-        if values[size - 1] > values[pivot_idx]:
-            dual_swap(values, indices, size - 1, pivot_idx)
-            if values[0] > values[size - 1]:
-                dual_swap(values, indices, 0, size - 1)
-        pivot_val = values[size - 1]
-
-        # Partition indices about pivot.  At the end of this operation,
-        # pivot_idx will contain the pivot value, everything to the left
-        # will be smaller, and everything to the right will be larger.
-        store_idx = 0
-        for i in range(size - 1):
+        return 0
+    
+    stack[top] = 0
+    top += 1
+    stack[top] = size - 1
+    top += 1
+    
+    while top > 0:
+        top -= 1
+        high = stack[top]
+        top -= 1
+        low = stack[top]
+        
+        if high - low < 16:
+            for i in range(low + 1, high + 1):
+                pivot_val = values[i]
+                pivot_idx_val = indices[i]
+                j = i - 1
+                while j >= low and values[j] > pivot_val:
+                    values[j + 1] = values[j]
+                    indices[j + 1] = indices[j]
+                    j -= 1
+                values[j + 1] = pivot_val
+                indices[j + 1] = pivot_idx_val
+            continue
+        
+        pivot_idx = low + (high - low) // 2
+        if values[low] > values[high]:
+            dual_swap(values, indices, low, high)
+        if values[high] > values[pivot_idx]:
+            dual_swap(values, indices, high, pivot_idx)
+            if values[low] > values[high]:
+                dual_swap(values, indices, low, high)
+        
+        pivot_val = values[high]
+        
+        store_idx = low
+        for i in range(low, high):
             if values[i] < pivot_val:
-                dual_swap(values, indices, i, store_idx)
+                if i != store_idx:
+                    dual_swap(values, indices, i, store_idx)
                 store_idx += 1
-        dual_swap(values, indices, store_idx, size - 1)
+        
+        if store_idx != high:
+            dual_swap(values, indices, store_idx, high)
+        
         pivot_idx = store_idx
-
-        # Recursively sort each side of the pivot
-        if pivot_idx > 1:
-            simultaneous_sort(values, indices, pivot_idx)
-        if pivot_idx + 2 < size:
-            simultaneous_sort(values + pivot_idx + 1,
-                              indices + pivot_idx + 1,
-                              size - pivot_idx - 1)
+        
+        cdef intp_t left_size = pivot_idx - low
+        cdef intp_t right_size = high - pivot_idx
+        
+        if left_size > right_size:
+            if left_size > 3:
+                stack[top] = low
+                top += 1
+                stack[top] = pivot_idx - 1
+                top += 1
+            if right_size > 3:
+                stack[top] = pivot_idx + 1
+                top += 1
+                stack[top] = high
+                top += 1
+        else:
+            if right_size > 3:
+                stack[top] = pivot_idx + 1
+                top += 1
+                stack[top] = high
+                top += 1
+            if left_size > 3:
+                stack[top] = low
+                top += 1
+                stack[top] = pivot_idx - 1
+                top += 1
+    
     return 0
