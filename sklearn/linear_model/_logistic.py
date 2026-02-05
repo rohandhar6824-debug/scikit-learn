@@ -711,7 +711,7 @@ def _log_reg_scoring_path(
 
     scores = list()
 
-    scoring = get_scorer(scoring)
+    scorer = get_scorer(scoring)
     for w in coefs:
         if fit_intercept:
             log_reg.coef_ = w[..., :-1]
@@ -720,15 +720,22 @@ def _log_reg_scoring_path(
             log_reg.coef_ = w
             log_reg.intercept_ = 0.0
 
-        if scoring is None:
+        if scorer is None:
             scores.append(log_reg.score(X_test, y_test, sample_weight=sw_test))
         else:
             score_params = score_params or {}
             score_params = _check_method_params(X=X, params=score_params, indices=test)
-            # FIXME: If scoring = "neg_brier_score" and if not all class labels
-            # are present in y_test, the following fails. Maybe we can pass
-            # "labels=classes" to the call of scoring.
-            scores.append(scoring(log_reg, X_test, y_test, **score_params))
+            
+            # FIXED: Pass labels=classes to the scorer for scoring methods that need
+            # to know about all classes, even if they're not present in y_test.
+            # This is particularly important for brier_score_loss which requires
+            # the full set of classes to compute probabilities correctly.
+            if scoring in ["neg_brier_score", "brier_score_loss"]:
+                # Ensure we pass labels parameter for brier score
+                score_params = score_params.copy()
+                score_params["labels"] = classes
+            
+            scores.append(scorer(log_reg, X_test, y_test, **score_params))
     return coefs, Cs, np.array(scores), n_iter
 
 
