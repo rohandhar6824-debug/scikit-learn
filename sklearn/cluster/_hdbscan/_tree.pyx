@@ -495,12 +495,9 @@ cpdef cnp.ndarray[cnp.intp_t, ndim=1, mode='c'] _do_labelling(
         if cluster != root_cluster:
             label = cluster_label_map[cluster]
         elif len(clusters) == 1 and allow_single_cluster:
-            # Handle potential multiple matches due to tied distances
-            parent_lambda_matches = lambda_array[child_array == n]
-            if parent_lambda_matches.shape[0] > 0:
-                parent_lambda = parent_lambda_matches[0]
-            else:
-                parent_lambda = 0.0
+            # There can only be one edge with this particular child hence this
+            # expression extracts a unique, scalar lambda value.
+            parent_lambda = lambda_array[child_array == n]
             if cluster_selection_epsilon != 0.0:
                 threshold = 1 / cluster_selection_epsilon
             else:
@@ -588,24 +585,14 @@ cdef cnp.intp_t traverse_upwards(
     cdef cnp.float64_t parent_eps
 
     root = cluster_tree['parent'].min()
-    # Handle potential multiple matches due to tied distances
-    cdef cnp.ndarray parent_matches = cluster_tree[cluster_tree['child'] == leaf]
-    if parent_matches.shape[0] > 0:
-        parent = parent_matches['parent'][0]  # Take first match
-    else:
-        parent = -1  # No parent found
+    parent = cluster_tree[cluster_tree['child'] == leaf]['parent']
     if parent == root:
         if allow_single_cluster:
             return parent
         else:
             return leaf  # return node closest to root
 
-    # Handle potential multiple matches due to tied distances
-    cdef cnp.ndarray parent_value_matches = cluster_tree[cluster_tree['child'] == parent]
-    if parent_value_matches.shape[0] > 0:
-        parent_eps = 1 / parent_value_matches['value'][0]
-    else:
-        parent_eps = np.inf  # Default large value
+    parent_eps = 1 / cluster_tree[cluster_tree['child'] == parent]['value']
     if parent_eps > cluster_selection_epsilon:
         return parent
     else:
@@ -633,12 +620,7 @@ cdef set epsilon_search(
 
     for leaf in leaves:
         leaf_nodes = children == leaf
-        # Handle potential empty selection due to tied distances
-        cdef cnp.ndarray leaf_distances = distances[leaf_nodes]
-        if leaf_distances.shape[0] > 0:
-            eps = 1 / leaf_distances[0]
-        else:
-            eps = np.inf
+        eps = 1 / distances[leaf_nodes][0]
         if eps < cluster_selection_epsilon:
             if leaf not in processed:
                 epsilon_child = traverse_upwards(
